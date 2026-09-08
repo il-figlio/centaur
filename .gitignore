@@ -48,6 +48,8 @@ services/sandbox/repos/
 
 # Agent / AI IDE config
 .agents/*
+!.agents/setup
+!.agents/resume
 !.agents/skills/
 !.agents/plugins/
 .agents/plugins/*

@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local label="$1"
+  shift
+  local started=$SECONDS
+  printf '\n==> %s\n' "$label"
+  "$@"
+  printf '<== %s (%ss)\n' "$label" "$((SECONDS - started))"
+}
+
+install_system_packages() {
+  local packages=(
+    build-essential
+    ca-certificates
+    cmake
+    curl
+    git
+    libpq-dev
+    libssl-dev
+    libvips42
+    libyaml-dev
+    perl
+    pkg-config
+    postgresql-client
+  )
+  local missing=()
+  local package
+
+  for package in "${packages[@]}"; do
+    if ! dpkg-query -W -f='${Status}' "$package" 2>/dev/null | grep -Fqx 'install ok installed'; then
+      missing+=("$package")
+    fi
+  done
+
+  if ((${#missing[@]} == 0)); then
+    echo "System packages already installed."
+    return
+  fi
+
+  local apt=(apt-get)
+  if ((EUID != 0)); then
+    apt=(sudo apt-get)
+  fi
+  "${apt[@]}" update
+  "${apt[@]}" install --no-install-recommends -y "${missing[@]}"
+}
+
+install_mise() {
+  mkdir -p "$HOME/.local/bin"
+  if [[ ! -x "$HOME/.local/bin/mise" ]]; then
+    curl -fsSL https://mise.run | MISE_INSTALL_PATH="$HOME/.local/bin/mise" sh
+  fi
+
+  local marker="# Centaur orb toolchain"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<'EOF'
+
+# Centaur orb toolchain
+export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH"
+EOF
+  fi
+
+  export PATH="$HOME/.local/bin:$HOME/.local/share/mise/shims:$HOME/.cargo/bin:$PATH"
+}
+
+install_toolchains() {
+  mise settings set ruby.compile false
+  mise use --global --yes \
+    node@24 \
+    pnpm@10.28.1 \
+    bun@1.3.13 \
+    ruby@3.4.8 \
+    rust@stable \
+    just@latest \
+    kubectl@latest \
+    helm@latest \
+    kind@latest
+  rustup component add rustfmt clippy
+  if ! gem list --installed --exact bundler --version 4.0.10 >/dev/null; then
+    gem install bundler --version 4.0.10 --no-document
+  fi
+}
+
+install_node_dependencies() {
+  pnpm install --frozen-lockfile
+
+  local docs_fingerprint
+  local docs_marker="docs/node_modules/.amp-package-lock-fingerprint"
+  docs_fingerprint="$(sha256sum docs/package-lock.json | cut -d' ' -f1)-$(node --version)"
+  if [[ ! -f "$docs_marker" ]] || [[ "$(<"$docs_marker")" != "$docs_fingerprint" ]]; then
+    npm ci --prefix docs
+    printf '%s\n' "$docs_fingerprint" >"$docs_marker"
+  else
+    echo "Docs dependencies already match package-lock.json."
+  fi
+}
+
+install_python_dependencies() {
+  uv sync --project services/workflow-python
+  uv run --project services/workflow-python --with pytest python -c 'import pytest'
+}
+
+install_ruby_dependencies() {
+  bundle install --gemfile services/console/Gemfile --jobs "$(nproc)"
+}
+
+fetch_rust_dependencies() {
+  cargo fetch --locked --manifest-path services/api-rs/Cargo.toml
+  cargo fetch --locked --manifest-path crates/harness-server/Cargo.toml
+}
+
+step "Install native build dependencies" install_system_packages
+step "Install mise" install_mise
+step "Install development toolchains" install_toolchains
+step "Install Node dependencies" install_node_dependencies
+step "Install Python workflow dependencies" install_python_dependencies
+step "Install Console Ruby dependencies" install_ruby_dependencies
+step "Fetch Rust dependencies" fetch_rust_dependencies
+
+printf '\nCentaur orb setup complete in %ss.\n' "$SECONDS"

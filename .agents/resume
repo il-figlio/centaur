@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Centaur's development services are started explicitly and credentials are
+# supplied at runtime, so waking an orb requires no reconnect or repair work.
+echo "Centaur orb resume complete."
